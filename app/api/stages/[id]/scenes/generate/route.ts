@@ -165,7 +165,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const store = await getOwnerScopedDocumentStore(ownerId);
     const doc = await store.loadDocument(stageId);
     if (!doc) return ownerNotFound(responseHeaders);
-    const existing = doc.scenes.find((scene) => scene.order === params2.order);
+    // Match the page by its stable outline id first: after a reorder, the
+    // scene at this order may belong to a different outline entry, and
+    // regenerating must replace the page the caller means, not that one.
+    const existing =
+      (params2.outlineId
+        ? doc.scenes.find((scene) => scene.outlineId === params2.outlineId)
+        : undefined) ?? doc.scenes.find((scene) => scene.order === params2.order);
     if (existing && !SUPPORTED.has(existing.type)) {
       return ownerApiError(
         'INVALID_REQUEST',
@@ -299,14 +305,37 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       const snapshot = outlineSnapshot.outlines ?? [];
       const rest = snapshot.filter((entry) => entry.id !== outline.id);
       const nextOutlines = [...rest, { ...outline }].sort((a, b) => a.order - b.order);
+      const nextOutline: AppDocumentOutline = {
+        ...outlineSnapshot,
+        outlines: nextOutlines,
+        updatedAt: Date.now(),
+      };
+
+      // The outline is authoritative for page order: a page regenerated after a
+      // reorder takes its planned order, and no two scene rows may share one.
+      const plannedOrder = new Map(nextOutlines.map((entry) => [entry.id, entry.order]));
+      const used = new Set<number>();
+      const scenes = afterWrite.scenes
+        .map((item) => {
+          const want = item.outlineId ? plannedOrder.get(item.outlineId) : undefined;
+          return want !== undefined && want !== item.order ? { ...item, order: want } : item;
+        })
+        .sort((a, b) => a.order - b.order)
+        .map((item) => {
+          if (!used.has(item.order)) {
+            used.add(item.order);
+            return item;
+          }
+          let next = used.size + 1;
+          while (used.has(next)) next += 1;
+          used.add(next);
+          return { ...item, order: next };
+        });
+
       await store.saveDocument({
         stage: afterWrite.stage,
-        scenes: afterWrite.scenes,
-        outline: {
-          ...outlineSnapshot,
-          outlines: nextOutlines,
-          updatedAt: Date.now(),
-        },
+        scenes,
+        outline: nextOutline,
       });
     }
 
