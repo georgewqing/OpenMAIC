@@ -17,6 +17,8 @@
  */
 import type { NextRequest } from 'next/server';
 
+import { APICallError } from 'ai';
+
 import {
   buildCompleteScene,
   generateSceneActions,
@@ -41,6 +43,7 @@ import { withRequestOwner } from '@/lib/server/identity/with-owner';
 import { ModelAuthorizationError } from '@/lib/server/model-config/model-authorization';
 import { assertWorkspaceModelsAuthorized } from '@/lib/server/model-config/runtime';
 import type { SceneOutline } from '@/lib/types/generation';
+import type { Action } from '@/lib/types/action';
 
 export const runtime = 'nodejs';
 
@@ -265,6 +268,20 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       if (error instanceof PBLGenerationError) {
         return ownerApiError('GENERATION_FAILED', 502, error.message, responseHeaders);
       }
+      if (APICallError.isInstance(error)) {
+        // The upstream (a shared LLM proxy) timed out, was rate-limited or
+        // failed. Nothing was written; the caller may retry this page.
+        const status = error.statusCode ?? 502;
+        const retryable = status === 429 || status === 502 || status === 503 || status === 504;
+        return ownerApiError(
+          'GENERATION_FAILED',
+          status,
+          retryable
+            ? `上游模型暂时不可用(${status}),请稍后重试这一页`
+            : `上游模型调用失败(${status})`,
+          responseHeaders,
+        );
+      }
       throw error;
     }
     if (!content) {
@@ -281,12 +298,28 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       );
     }
 
-    const actions = filterKnownActions(
-      await generateSceneActions(outline, content, aiCallFor('scene-actions'), {
-        agents: doc.stage.generatedAgentConfigs,
-        languageDirective: doc.stage.languageDirective ?? '',
-      }),
-    );
+    let actions: Action[];
+    let actionsFailed = false;
+    try {
+      actions = filterKnownActions(
+        await generateSceneActions(outline, content, aiCallFor('scene-actions'), {
+          agents: doc.stage.generatedAgentConfigs,
+          languageDirective: doc.stage.languageDirective ?? '',
+        }),
+      );
+    } catch (error) {
+      if (APICallError.isInstance(error)) {
+        // The page content is good; only the narration script failed. Write the
+        // page without actions rather than losing the whole generation.
+        console.warn(
+          `[multi-lesson] scene actions failed for stage ${stageId} order ${params2.order}: ${error.message}`,
+        );
+        actions = [];
+        actionsFailed = true;
+      } else {
+        throw error;
+      }
+    }
     const built = buildCompleteScene(outline, content, actions, stageId, {
       sceneId: existing?.id ?? sceneIdFor(doc.scenes, params2.order),
     });
@@ -340,7 +373,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     }
 
     return ownerJson(
-      { scene: { id: scene.id, order: scene.order, title: scene.title, type: scene.type } },
+      {
+        scene: { id: scene.id, order: scene.order, title: scene.title, type: scene.type },
+        ...(actionsFailed ? { actionsFailed: true } : {}),
+      },
       200,
       responseHeaders,
     );
