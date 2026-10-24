@@ -1,0 +1,108 @@
+# 开发环境栈 —— 与生产完全隔离
+#
+# 隔离手段:
+#   1. COMPOSE_PROJECT_NAME=openmaic-dev → 容器名、网络名、数据卷名全部独立
+#   2. 端口 3901(生产 3800)
+#   3. 独立 Postgres 实例与密码(生产是 openmaic-dev 密码 + 独立卷)
+#   4. build context 是本 worktree 目录 → 镜像只含 feature/multi-lesson 分支的代码
+#
+# 启动:
+#   cd /raid/companies/software/projects/beike-sys/OpenMAIC-dev
+#   docker compose -f docker-compose.dev.yml up -d --build
+#
+# 注意:本文件只存在于开发 worktree,不入 main 分支。
+
+services:
+  openmaic:
+    build:
+      context: .
+      args:
+        - ALPINE_MIRROR=${ALPINE_MIRROR:-}
+        - NPM_REGISTRY=${NPM_REGISTRY:-}
+        - ALLOWED_FRAME_ANCESTORS=${ALLOWED_FRAME_ANCESTORS:-}
+        - NEXT_PUBLIC_MAIC_EDITOR_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_ENABLED:-}
+        - NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED=${NEXT_PUBLIC_MAIC_EDITOR_RENDERER_ENABLED:-}
+        - NEXT_PUBLIC_MAIC_PLAYBACK_RENDERER_ENABLED=${NEXT_PUBLIC_MAIC_PLAYBACK_RENDERER_ENABLED:-}
+        - NEXT_PUBLIC_PI_CHAT_ENABLED=${NEXT_PUBLIC_PI_CHAT_ENABLED:-}
+        - NEXT_PUBLIC_COURSEWARE_REFERENCE_ENABLED=${NEXT_PUBLIC_COURSEWARE_REFERENCE_ENABLED:-}
+        - NEXT_PUBLIC_SHOW_VOCATIONAL_TEST_UI=${NEXT_PUBLIC_SHOW_VOCATIONAL_TEST_UI:-}
+        - NEXT_PUBLIC_ENABLE_VIDEO_EXPORT=${NEXT_PUBLIC_ENABLE_VIDEO_EXPORT:-}
+        - NEXT_PUBLIC_VIDEO_EXPORT_CTA_DESTINATION=${NEXT_PUBLIC_VIDEO_EXPORT_CTA_DESTINATION:-}
+        - NEXT_PUBLIC_ENABLE_PPTX_IMPORT=${NEXT_PUBLIC_ENABLE_PPTX_IMPORT:-}
+        - NEXT_PUBLIC_PRO_WORKBENCH_ENABLED=${NEXT_PUBLIC_PRO_WORKBENCH_ENABLED:-}
+    ports:
+      - '${DEV_PUBLISH_ADDRESS:-0.0.0.0}:${DEV_PORT:-3901}:3000'
+    env_file:
+      - docker-compose.defaults.env
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - OPENMAIC_PUBLISH_ADDRESS=${DEV_PUBLISH_ADDRESS:-0.0.0.0}
+    networks:
+      - default
+      - render
+    volumes:
+      - ./openmaic.yml:/app/openmaic.yml:ro
+      - openmaic-dev-data:/app/data
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16
+    environment:
+      - POSTGRES_DB=openmaic_dev
+      - POSTGRES_USER=openmaic_dev
+      - POSTGRES_PASSWORD=${DEV_POSTGRES_PASSWORD:-openmaicdev}
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U openmaic_dev -d openmaic_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - openmaic-dev-postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  render-service:
+    build: ./render-service
+    profiles:
+      - video-export
+    expose:
+      - '9000'
+    cap_add:
+      - NET_ADMIN
+    environment:
+      - PORT=9000
+      - RENDER_RESOURCE_PROFILE=${RENDER_SERVICE_RESOURCE_PROFILE:-standard}
+      - RENDER_CHUNK_EXECUTION=${RENDER_CHUNK_EXECUTION:-false}
+      - RENDER_CHUNK_COUNT=${RENDER_CHUNK_COUNT:-1}
+      - RENDER_CHUNK_WORKERS=${RENDER_CHUNK_WORKERS:-1}
+      - RENDER_MAX_PARALLEL_CHUNKS=${RENDER_MAX_PARALLEL_CHUNKS:-1}
+      - RENDER_CHUNK_SIZE_FRAMES=${RENDER_CHUNK_SIZE_FRAMES:-0}
+      - RENDER_TARGET_CHUNK_FRAMES=${RENDER_TARGET_CHUNK_FRAMES:-0}
+      - PRODUCER_HEADLESS_SHELL_PATH=/usr/bin/chromium-headless-shell
+      - RENDER_MAX_CONCURRENCY=1
+      - RENDER_MAX_CONCURRENT_EXTRACTIONS=1
+      - RENDER_MAX_PARALLEL_EXTRACTION_BATCHES=1
+      - PRODUCER_PUPPETEER_PROTOCOL_TIMEOUT_MS=900000
+      - HF_STATIC_DEDUP=false
+      - RENDER_MAX_JOBS_PER_USER=0
+      - RENDER_PREVIEW_TIMEOUT_MS=${RENDER_PREVIEW_TIMEOUT_MS:-20000}
+      - RENDER_PREVIEW_MAX_CONCURRENCY=1
+      - RENDER_PREVIEW_MAX_IN_FLIGHT=${RENDER_PREVIEW_MAX_IN_FLIGHT:-8}
+      - RENDER_PREVIEW_MAX_PARALLEL_EXTRACTION_BATCHES=1
+    mem_limit: ${RENDER_SERVICE_MEMORY_LIMIT:-8g}
+    shm_size: 2gb
+    networks:
+      - render
+    restart: unless-stopped
+
+networks:
+  default: {}
+  render:
+    internal: true
+
+volumes:
+  openmaic-dev-data:
+  openmaic-dev-postgres:
