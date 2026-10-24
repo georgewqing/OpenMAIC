@@ -34,8 +34,9 @@
  * keeps its copy because the hero only exists on this resting surface.
  */
 
+import Link from 'next/link';
 import { type ReactNode, useState } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Layers3 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useBrand, useIsDesktop } from '@/lib/brand/brand-context';
 import { arrivedByProSwap } from '@/lib/workbench/pro-swap';
@@ -186,6 +187,15 @@ export function WorkspaceHome({
               materialSeed={materialSeed}
               onMaterialSeedConsumed={onMaterialSeedConsumed}
             />
+            <div className="mt-3 flex justify-center">
+              <Link
+                href="/multi-lesson/new"
+                className="inline-flex items-center gap-1.5 rounded-full border border-dashed px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+              >
+                <Layers3 className="size-3.5" />
+                单元多课大纲:一次规划整单元,逐课逐页选择性生成
+              </Link>
+            </div>
           </div>
         </section>
 
